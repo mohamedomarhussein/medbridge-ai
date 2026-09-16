@@ -7,16 +7,17 @@ const URGENCY_COLORS = {
   'SELF-CARE': 'bg-green-100 border-green-500 text-green-900',
 };
 
+// Fallback voice locales (Chrome often lacks local-language voices)
 const LANG_TO_VOICE = {
   en: 'en-KE',
   sw: 'sw-KE',
-  so: 'so-SO',
+  so: 'en-KE',   // Somali voice usually unavailable → English reads Latin script fine
   ki: 'en-KE',
   luo: 'en-KE',
   kam: 'en-KE',
   kln: 'en-KE',
   mas: 'en-KE',
-  bor: 'so-SO',
+  bor: 'en-KE',
 };
 
 export default function App() {
@@ -28,16 +29,44 @@ export default function App() {
   const [voiceError, setVoiceError] = useState('');
   const bottomRef = useRef(null);
   const recognitionRef = useRef(null);
+  const voicesRef = useRef([]);
+
+  // Load available voices (Chrome loads them async)
+  useEffect(() => {
+    function loadVoices() {
+      voicesRef.current = window.speechSynthesis?.getVoices() || [];
+    }
+    loadVoices();
+    if (window.speechSynthesis) {
+      window.speechSynthesis.onvoiceschanged = loadVoices;
+    }
+  }, []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  // Smart speak: pick best available voice for the target language
   function speak(text, langCode = 'en') {
     if (!voiceEnabled || !window.speechSynthesis) return;
     window.speechSynthesis.cancel();
+
+    const targetLang = LANG_TO_VOICE[langCode] || 'en-KE';
+    const langPrefix = targetLang.split('-')[0];
+    const voices = voicesRef.current.length
+      ? voicesRef.current
+      : window.speechSynthesis.getVoices();
+
+    // Try: exact match → same language → any English → first available
+    const voice =
+      voices.find((v) => v.lang === targetLang) ||
+      voices.find((v) => v.lang.startsWith(langPrefix)) ||
+      voices.find((v) => v.lang.startsWith('en')) ||
+      voices[0];
+
     const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = LANG_TO_VOICE[langCode] || 'en-KE';
+    if (voice) utterance.voice = voice;
+    utterance.lang = voice?.lang || targetLang;
     utterance.rate = 0.95;
     window.speechSynthesis.speak(utterance);
   }
@@ -54,7 +83,6 @@ export default function App() {
 
     const recognition = new SpeechRecognition();
     recognitionRef.current = recognition;
-
     recognition.lang = 'en-KE';
     recognition.continuous = false;
     recognition.interimResults = false;
@@ -70,7 +98,6 @@ export default function App() {
     recognition.onerror = (e) => {
       console.error('Speech error:', e.error, e.message);
       setListening(false);
-
       const messages = {
         'not-allowed': 'Microphone blocked. Click the 🔒 in the address bar → allow Microphone → refresh.',
         'service-not-allowed': 'Browser blocked speech service. Try real Google Chrome (not Chromium).',
@@ -79,7 +106,6 @@ export default function App() {
         'network': 'Network error. Web Speech API needs internet to Google servers.',
         'aborted': 'Listening stopped.',
       };
-
       setVoiceError(messages[e.error] || `Voice error: ${e.error}`);
     };
 
