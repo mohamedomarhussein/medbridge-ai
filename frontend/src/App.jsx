@@ -7,15 +7,104 @@ const URGENCY_COLORS = {
   'SELF-CARE': 'bg-green-100 border-green-500 text-green-900',
 };
 
+const LANG_TO_VOICE = {
+  en: 'en-KE',
+  sw: 'sw-KE',
+  so: 'so-SO',
+  ki: 'en-KE',
+  luo: 'en-KE',
+  kam: 'en-KE',
+  kln: 'en-KE',
+  mas: 'en-KE',
+  bor: 'so-SO',
+};
+
 export default function App() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [listening, setListening] = useState(false);
+  const [voiceEnabled, setVoiceEnabled] = useState(false);
+  const [voiceError, setVoiceError] = useState('');
   const bottomRef = useRef(null);
+  const recognitionRef = useRef(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  function speak(text, langCode = 'en') {
+    if (!voiceEnabled || !window.speechSynthesis) return;
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = LANG_TO_VOICE[langCode] || 'en-KE';
+    utterance.rate = 0.95;
+    window.speechSynthesis.speak(utterance);
+  }
+
+  function startListening() {
+    setVoiceError('');
+    const SpeechRecognition =
+      window.SpeechRecognition || window.webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+      setVoiceError('Voice input not supported in this browser. Use Chrome or Edge.');
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognitionRef.current = recognition;
+
+    recognition.lang = 'en-KE';
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+
+    recognition.onstart = () => {
+      setListening(true);
+      setVoiceError('');
+    };
+
+    recognition.onend = () => setListening(false);
+
+    recognition.onerror = (e) => {
+      console.error('Speech error:', e.error, e.message);
+      setListening(false);
+
+      const messages = {
+        'not-allowed': 'Microphone blocked. Click the 🔒 in the address bar → allow Microphone → refresh.',
+        'service-not-allowed': 'Browser blocked speech service. Try real Google Chrome (not Chromium).',
+        'no-speech': 'No speech detected. Speak louder or check your mic.',
+        'audio-capture': 'No microphone found. Check system sound settings.',
+        'network': 'Network error. Web Speech API needs internet to Google servers.',
+        'aborted': 'Listening stopped.',
+      };
+
+      setVoiceError(messages[e.error] || `Voice error: ${e.error}`);
+    };
+
+    recognition.onresult = (event) => {
+      const transcript = event.results[0][0].transcript;
+      setInput((prev) => (prev ? prev + ' ' + transcript : transcript));
+      setVoiceError('');
+    };
+
+    try {
+      recognition.start();
+    } catch (err) {
+      console.error('Failed to start recognition:', err);
+      setVoiceError('Could not start voice recognition: ' + err.message);
+    }
+  }
+
+  function stopListening() {
+    try {
+      recognitionRef.current?.stop();
+    } catch (err) {
+      console.error(err);
+    }
+    setListening(false);
+  }
 
   async function send() {
     if (!input.trim() || loading) return;
@@ -31,24 +120,31 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: currentInput }),
       });
+
+      if (!res.ok) throw new Error(`Server returned ${res.status}`);
       const data = await res.json();
+      if (!data.response) throw new Error('Invalid response from server');
 
       setMessages((m) => [
         ...m,
         {
           role: 'ai',
-          text: data.response || 'Sorry, something went wrong.',
+          text: data.response,
           urgency: data.urgency,
           redFlags: data.redFlags || [],
           nextSteps: data.nextSteps || [],
           disclaimer: data.disclaimer,
           language: data.languageName,
+          langCode: data.detectedLanguage,
         },
       ]);
+
+      if (voiceEnabled) speak(data.response, data.detectedLanguage);
     } catch (err) {
+      console.error(err);
       setMessages((m) => [
         ...m,
-        { role: 'ai', text: 'Connection error. Please try again.' },
+        { role: 'ai', text: 'Sorry, something went wrong. Please try again.' },
       ]);
     }
     setLoading(false);
@@ -57,13 +153,25 @@ export default function App() {
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
       <header className="bg-white shadow-sm border-b">
-        <div className="max-w-4xl mx-auto px-4 py-4">
-          <h1 className="text-2xl font-bold text-slate-900">
-            MedBridge <span className="text-sky-500">AI</span>
-          </h1>
-          <p className="text-sm text-gray-500">
-            Your bridge to better health — in your language
-          </p>
+        <div className="max-w-4xl mx-auto px-4 py-4 flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-slate-900">
+              MedBridge <span className="text-sky-500">AI</span>
+            </h1>
+            <p className="text-sm text-gray-500">
+              Your bridge to better health — in your language
+            </p>
+          </div>
+          <button
+            onClick={() => setVoiceEnabled((v) => !v)}
+            className={`px-3 py-2 rounded-lg text-sm font-medium border transition ${
+              voiceEnabled
+                ? 'bg-sky-500 text-white border-sky-500'
+                : 'bg-white text-gray-600 border-gray-300 hover:border-sky-500'
+            }`}
+          >
+            {voiceEnabled ? '🔊 Voice ON' : '🔇 Voice OFF'}
+          </button>
         </div>
       </header>
 
@@ -145,11 +253,19 @@ export default function App() {
                   </p>
                 )}
 
-                {m.language && (
-                  <p className="mt-2 text-xs text-gray-400">
-                    Detected: {m.language}
-                  </p>
-                )}
+                <div className="mt-3 flex items-center justify-between">
+                  {m.language && (
+                    <p className="text-xs text-gray-400">
+                      Detected: {m.language}
+                    </p>
+                  )}
+                  <button
+                    onClick={() => speak(m.text, m.langCode || 'en')}
+                    className="text-xs text-sky-500 hover:text-sky-600 font-medium"
+                  >
+                    🔊 Read aloud
+                  </button>
+                </div>
               </div>
             )}
           </div>
@@ -164,7 +280,18 @@ export default function App() {
       </main>
 
       <footer className="bg-white border-t">
-        <div className="max-w-4xl mx-auto px-4 py-4 flex gap-2">
+        <div className="max-w-4xl mx-auto px-4 py-4 flex gap-2 items-center">
+          <button
+            onClick={listening ? stopListening : startListening}
+            className={`px-4 py-3 rounded-xl font-medium transition ${
+              listening
+                ? 'bg-red-500 text-white animate-pulse'
+                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+            }`}
+            title={listening ? 'Stop listening' : 'Start voice input'}
+          >
+            {listening ? '⏹️' : '🎤'}
+          </button>
           <input
             className="flex-1 border rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-sky-500"
             value={input}
@@ -181,6 +308,16 @@ export default function App() {
             Send
           </button>
         </div>
+        {listening && (
+          <p className="text-center text-sm text-red-500 pb-2">
+            🎤 Listening... speak now
+          </p>
+        )}
+        {voiceError && (
+          <p className="text-center text-sm text-orange-600 bg-orange-50 py-2 px-4">
+            ⚠️ {voiceError}
+          </p>
+        )}
       </footer>
     </div>
   );
